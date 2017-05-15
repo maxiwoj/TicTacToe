@@ -24,6 +24,9 @@ struct sockaddr_un client_unix_address;
 struct sockaddr_in server_inet_address;
 struct sockaddr_in client_inet_address;
 
+socklen_t unix_address_size = sizeof(struct sockaddr_un);
+socklen_t inet_address_size = sizeof(struct sockaddr_in);
+
 struct client *clients = NULL;
 struct game *games = NULL;
 
@@ -100,8 +103,8 @@ void init_server() {
 
     printf("Binding sockets");
 
-    CHECK_RQ(bind(unix_socket, (struct sockaddr*) &server_unix_address, sizeof(struct sockaddr_un)) != -1);
-    CHECK_RQ(bind(inet_socket, (struct sockaddr*) &server_inet_address, sizeof(struct sockaddr_in)) != -1);
+    CHECK_RQ(bind(unix_socket, (struct sockaddr*) &server_unix_address, unix_address_size) != -1);
+    CHECK_RQ(bind(inet_socket, (struct sockaddr*) &server_inet_address, inet_address_size) != -1);
     printf("\t\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
 
     CHECK_RQ(listen(unix_socket, 10) != -1);
@@ -119,7 +122,7 @@ void listen_function() {
         pthread_mutex_lock(&client_list_mutex);
         tmp_client.socket = accept(unix_socket, NULL, NULL);
         if(tmp_client.socket == -1) {
-            CHECK(errno != EAGAIN || errno != EWOULDBLOCK);
+            CHECK(tmp_client.socket != EAGAIN && tmp_client.socket != EWOULDBLOCK);
             pthread_mutex_unlock(&client_list_mutex);
         } else {
             CHECK(pthread_create(&tmp_client.thread, NULL, server_thread_function, &tmp_client) != -1);
@@ -128,7 +131,7 @@ void listen_function() {
         pthread_mutex_lock(&client_list_mutex);
         tmp_client.socket = accept(inet_socket, NULL, NULL);
         if(tmp_client.socket == -1) {
-            CHECK(tmp_client.socket == EAGAIN || tmp_client.socket == EWOULDBLOCK);
+            CHECK(tmp_client.socket != EAGAIN && tmp_client.socket != EWOULDBLOCK);
             pthread_mutex_unlock(&client_list_mutex);
         } else {
             CHECK(pthread_create(&tmp_client.thread, NULL, server_thread_function, &tmp_client) != -1);
@@ -159,10 +162,10 @@ void* server_thread_function(void* tmp_client){
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-noreturn"
     while(1){
-        CHECK(recv(client->socket, &request, sizeof(request), MSG_WAITALL) != -1);
+        CHECK(recv(client->socket, &request, sizeof(request), 0) != -1);
         switch(request.action){
             case REGISTER_USER:
-                printf("Registering client %s\n", request.name);
+                printf("Registering client %s", request.name);
                 strcpy(client->name, request.name);
                 printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 pthread_mutex_unlock(&client_list_mutex);
@@ -219,9 +222,19 @@ void* server_thread_function(void* tmp_client){
                 printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 break;
             case OPPONENT_MOVED:
+                printf("Player %s moved\n", request.name);
                 pthread_mutex_lock(&send_to_opponent_mutex);
                 CHECK(send(request.opponent_socket, (void *) &request, sizeof(request), 0));
                 pthread_mutex_unlock(&send_to_opponent_mutex);
+                break;
+            case GAME_STATE:
+                if(request.gameState == DISCONN){
+                    pthread_mutex_lock(&send_to_opponent_mutex);
+                    pthread_mutex_lock(&client_list_mutex);
+                    CHECK(send(request.opponent_socket, (void *) &request, sizeof(request), 0));
+                    pthread_mutex_unlock(&client_list_mutex);
+                    pthread_mutex_unlock(&send_to_opponent_mutex);
+                }
                 break;
             default:
                 printf("Request received but not recognized: %d\n", request.action);
@@ -245,20 +258,23 @@ void send_opponent_to_player(struct game *game, struct client *client) {
 }
 
 void unregister_client(struct client *pClient) {
-    struct client *tmp  = clients;
-    while(tmp!=NULL){
-        printf("%d:%s",tmp->socket,tmp->name);
-        tmp=tmp->next;
-    }
     if(clients == pClient){
         clients = pClient->next;
         free(pClient);
-    } else {
-        struct client* prev = clients;
-        while(prev->next != pClient && prev->next != NULL)
+        return;
+    }
+    if(clients != NULL){
+        struct client *tmp  = clients->next;
+        struct client *prev = clients;
+        while(tmp != NULL && tmp != pClient){
+            tmp = tmp->next;
             prev = prev->next;
-        if(prev->next != NULL)
-            prev->next = pClient->next;
+
+        }
+        if(tmp != NULL){
+            prev->next = tmp->next;
+            free(tmp);
+        }
     }
 }
 

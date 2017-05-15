@@ -64,10 +64,11 @@ int main(int argc, char **argv){
                 if(response.gameState == LOSE){
 //                    TODO:
                 } else if(response.gameState == GAME_ON){ //opponent has been found
+                    pthread_mutex_lock(&game_mutex);
                     opponent_socket = response.opponent_socket;
                     sign = response.sign;
-                    printf("enemy found \033[32m[ OK ]\033[0m\n");
-                    pthread_mutex_lock(&game_mutex);
+                    my_turn = sign == 'X' ? 1 : 0;
+                    mvprintw(FIELD_SIZE_ROWS, 0,"enemy found \033[32m[ OK ]\033[0m\n");
                     shouldWait=0;
                     pthread_cond_signal(&waiting_cond);
                     pthread_mutex_unlock(&game_mutex);
@@ -76,6 +77,7 @@ int main(int argc, char **argv){
                     mvprintw(FIELD_SIZE_COLS/2, FIELD_SIZE_ROWS/2 - 30,"\tPlayer %s disconected, which implies you winned by walkover\t");
                     game_state = 0;
                     getch();
+                    pthread_mutex_unlock(&game_mutex);
                 }
                 break;
             case OPPONENT_MOVED:
@@ -143,7 +145,6 @@ void exit_handler(int signo) {
 }
 
 void atexit_function(){
-    fflush(stdout);
     struct request request;
     if(game_state==1){
         strcpy(request.name,clientName);
@@ -214,7 +215,6 @@ void init_client(){
 
 void *menu(){
     initscr();
-    CHECK_RQ(wresize(stdscr, FIELD_SIZE_ROWS, FIELD_SIZE_COLS) != ERR);
     mvprintw(FIELD_SIZE_ROWS-1,0,"Przycisnij przycisk aby rozpoczac...\n");
 
     noecho();
@@ -326,24 +326,23 @@ void play() {
             clear();
             mvprintw(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2 - 5, "WINNER!!!");
             getch();
-        } else sendNotificationClientMoved();
+        } else if(game_state && thread_is_alive) sendNotificationClientMoved();
         pthread_mutex_unlock(&game_mutex);
     }
 }
 
 void sendNotificationClientMoved() {
-    pthread_mutex_lock(&game_mutex);
     struct request request;
     request.action = OPPONENT_MOVED;
-    request.opponent_socket = socket_fd;
+    request.opponent_socket = opponent_socket;
+    strcpy(request.name, clientName);
     request.sign = sign;
     struct fieldPoint fieldPoint;
     fieldPoint.y = curr_y;
     fieldPoint.x = curr_x;
     request.fieldPoint = fieldPoint;
-    CHECK(send(opponent_socket, &request, sizeof(request), 0) != -1);
+    CHECK(send(socket_fd, &request, sizeof(request), 0) != -1);
     my_turn = 0;
-    pthread_mutex_unlock(&game_mutex);
 }
 
 void initField() {
@@ -357,6 +356,7 @@ void initField() {
 gamestate_en makeMove() {
     getyx(stdscr, curr_y, curr_x);
     int user_action = 0;
+    pthread_mutex_unlock(&game_mutex);
     while(user_action != 10){
         user_action = getch();
         switch(user_action){
@@ -380,13 +380,15 @@ gamestate_en makeMove() {
 //                TODO: End the game and send GAME disconnect
 //                return;
             default:
+                pthread_mutex_lock(&game_mutex);
                 if(field[curr_y][curr_x] == 0 && (user_action == 32 || user_action == 10)) {
                     field[curr_y][curr_x] = sign;
-                    printw("%c", sign);
+                    mvprintw(curr_y,curr_x,"%c", sign);
                     movesCount++;
                     if(checkWon(curr_y,curr_x,sign)) return WIN;
                     else return GAME_ON;
                 }
+                pthread_mutex_unlock(&game_mutex);
                 break;
         }
     }
