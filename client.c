@@ -1,15 +1,14 @@
 #include "common.h"
 #include <curses.h>
 
-int curr_x,curr_y;
+int curr_x = FIELD_SIZE_COLS/2;
+int curr_y = FIELD_SIZE_ROWS/2;
 int shouldWait=1;
 int game_state=0;
 int my_turn=0;
 int opponent_socket;
 int local_flag = 1;
-int enemy_ready=0;
 int server_port;
-int client_port;
 char server_path[CLIENT_NAME_LENGTH + 2];
 char* ip;
 char clientName[CLIENT_NAME_LENGTH];
@@ -38,6 +37,10 @@ void play();
 short checkWon(int y, int x, char sign) ;
 
 void sendNotificationClientMoved();
+
+int kbhit(void);
+
+int getUsrInput();
 
 int main(int argc, char **argv){
     CHECK(atexit(atexit_function) == 0);
@@ -74,9 +77,12 @@ int main(int argc, char **argv){
                     pthread_mutex_unlock(&game_mutex);
                 } else if(response.gameState == DISCONN){
                     pthread_mutex_lock(&game_mutex);
-                    mvprintw(FIELD_SIZE_COLS/2, FIELD_SIZE_ROWS/2 - 30,"\tPlayer %s disconected, which implies you winned by walkover\t");
+                    mvprintw(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2 - 30,"\tPlayer %s disconected, which implies you winned by walkover\t");
+                    refresh();
+                    my_turn = 1;
                     game_state = 0;
-                    getch();
+                    shouldWait = 1;
+                    pthread_cond_signal(&waiting_cond);
                     pthread_mutex_unlock(&game_mutex);
                 }
                 break;
@@ -118,8 +124,9 @@ void get_arguments(int argc, char **argv) {
         strcpy(server_path, argv[3]);
         printf("\t\t\t\033[32m[ OK ]\033[0m\n");
     } else if(argc == 5 && strcmp(argv[2], "network") == 0) {
+        local_flag = 0;
         strcpy(clientName, argv[1]);
-        strcpy(ip,argv[3]);
+        ip = argv[3];
         server_port = atoi(argv[4]);
         printf("\t\t\t\033[32m[ OK ]\033[0m\n");
     } else {
@@ -201,7 +208,7 @@ void init_client(){
         printf("Setting up server adress");
         server_inet_address.sin_family = AF_INET;
         inet_pton(AF_INET, ip, &(server_inet_address.sin_addr.s_addr));
-        server_inet_address.sin_port = htons((uint16_t) server_port);
+        server_inet_address.sin_port = htons(server_port);
         server_address = (struct sockaddr*) &server_inet_address;
         printf("\t\t\t\033[32m[ OK ]\033[0m\n");
 
@@ -229,7 +236,7 @@ void *menu(){
     const short int max_choice = 3;
     do{
         //get user_action
-        user_action = getch();
+        user_action = getUsrInput();
         clear();
         //react to user_action
         if( user_action == 259 && which != min_choice ) which--;
@@ -243,7 +250,7 @@ void *menu(){
                     printw("Wcisnij dowolny przycisk aby rozpoczac...\n");
                     printw("Esc - powrot do menu");
                     move(FIELD_SIZE_ROWS-1,0);
-                    user_action=getch();
+                    user_action=getUsrInput();
                     if(user_action!=27){
                         pthread_mutex_lock(&game_mutex);
                         game_state = 1;
@@ -256,7 +263,7 @@ void *menu(){
                 case 2:
                     clear();
 //                    TODO: historia()
-                    while(user_action != 27) user_action=getch();
+                    while(user_action != 27) user_action=getUsrInput();
                     clear();
                     break;
                 case 3:
@@ -291,7 +298,7 @@ void *menu(){
         attroff( A_REVERSE );
         mvprintw(FIELD_SIZE_ROWS-1,0,"Game created and produced by Maksymilian Wojczuk");
     } while( thread_is_alive);			//to end the loop you need to hit enter on "exit"
-//    getch();
+//    getUsrInput();
     endwin();
     kill(getpid(), SIGINT);
     return NULL;
@@ -307,6 +314,7 @@ void startGame() {
     pthread_mutex_lock(&game_mutex);
     clear();
     mvprintw(FIELD_SIZE_ROWS/2,(FIELD_SIZE_COLS/2) - 14, "Oczekiwanie na przeciwnika...");
+    refresh();
     while(shouldWait)
         pthread_cond_wait(&waiting_cond, &game_mutex);
     pthread_mutex_unlock(&game_mutex);
@@ -320,36 +328,21 @@ void play() {
     while(game_state==1 && thread_is_alive==1){
         pthread_mutex_lock(&game_mutex);
         while(!my_turn) pthread_cond_wait(&waiting_cond, &game_mutex);
+        mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2 - 5, "YOUR TURN");
+        getUsrInput();
+        for(int i = FIELD_SIZE_COLS/2 - 5 ; i < FIELD_SIZE_COLS/2 + 5 ; i++){
+            mvprintw(FIELD_SIZE_ROWS - 1, i, "%c",field[FIELD_SIZE_ROWS -1][i] != 0 ? field[FIELD_SIZE_ROWS -1][i] : ' ');
+        }
+        move(curr_y,curr_x);
         if(makeMove() == WIN){
             sendNotificationClientMoved();
             sendNotificationClientWon();
             clear();
-            mvprintw(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2 - 5, "WINNER!!!");
-            getch();
+            mvprintw(FIELD_SIZE_ROWS-1, FIELD_SIZE_COLS/2 - 5, "WINNER!!!");
+            refresh();
+            getUsrInput();
         } else if(game_state && thread_is_alive) sendNotificationClientMoved();
         pthread_mutex_unlock(&game_mutex);
-    }
-}
-
-void sendNotificationClientMoved() {
-    struct request request;
-    request.action = OPPONENT_MOVED;
-    request.opponent_socket = opponent_socket;
-    strcpy(request.name, clientName);
-    request.sign = sign;
-    struct fieldPoint fieldPoint;
-    fieldPoint.y = curr_y;
-    fieldPoint.x = curr_x;
-    request.fieldPoint = fieldPoint;
-    CHECK(send(socket_fd, &request, sizeof(request), 0) != -1);
-    my_turn = 0;
-}
-
-void initField() {
-    for(int i = 0 ; i < FIELD_SIZE_ROWS ; i++){
-        for(int j = 0 ; j < FIELD_SIZE_COLS ; j++){
-            field[i][j] = 0;
-        }
     }
 }
 
@@ -357,8 +350,8 @@ gamestate_en makeMove() {
     getyx(stdscr, curr_y, curr_x);
     int user_action = 0;
     pthread_mutex_unlock(&game_mutex);
-    while(user_action != 10){
-        user_action = getch();
+    while(1){
+        user_action = getUsrInput();
         switch(user_action){
             case 260:
                 curr_x--;
@@ -384,12 +377,35 @@ gamestate_en makeMove() {
                 if(field[curr_y][curr_x] == 0 && (user_action == 32 || user_action == 10)) {
                     field[curr_y][curr_x] = sign;
                     mvprintw(curr_y,curr_x,"%c", sign);
+                    refresh();
                     movesCount++;
                     if(checkWon(curr_y,curr_x,sign)) return WIN;
                     else return GAME_ON;
                 }
                 pthread_mutex_unlock(&game_mutex);
                 break;
+        }
+    }
+}
+
+void sendNotificationClientMoved() {
+    struct request request;
+    request.action = OPPONENT_MOVED;
+    request.opponent_socket = opponent_socket;
+    strcpy(request.name, clientName);
+    request.sign = sign;
+    struct fieldPoint fieldPoint;
+    fieldPoint.y = curr_y;
+    fieldPoint.x = curr_x;
+    request.fieldPoint = fieldPoint;
+    CHECK(send(socket_fd, &request, sizeof(request), 0) != -1);
+    my_turn = 0;
+}
+
+void initField() {
+    for(int i = 0 ; i < FIELD_SIZE_ROWS ; i++){
+        for(int j = 0 ; j < FIELD_SIZE_COLS ; j++){
+            field[i][j] = 0;
         }
     }
 }
@@ -402,4 +418,32 @@ short checkWon(int y, int x, char sign) {
 //    TODO: logic of winning
 //    TODO: Reverse winning fields
     return 0;
+}
+
+int kbhit(void){
+    struct timeval        timeout;
+    fd_set                readfds;
+    int                how;
+
+    /* look only at stdin (fd = 0) */
+    FD_ZERO(&readfds);
+    FD_SET(0, &readfds);
+
+    /* poll: return immediately */
+    timeout.tv_sec = 0L;
+    timeout.tv_usec = 0L;
+
+    how = select(1, &readfds, (fd_set *)NULL, (fd_set *)NULL, &timeout);
+    /* Change "&timeout" above to "(struct timeval *)0"       ^^^^^^^^
+     * if you want to wait until a key is hit
+     */
+
+    if ((how > 0) && FD_ISSET(0, &readfds))
+        return 1;
+    else
+        return 0;
+}
+int getUsrInput(){
+    while(kbhit()) getch();
+    return getch();
 }

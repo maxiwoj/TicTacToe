@@ -11,8 +11,7 @@ void unregister_client(struct client *pClient);
 void get_args(int argc, char** argv) ;
 void init_server();
 void listen_function() ;
-
-void send_opponent_to_player(struct game *game, struct client *client) ;
+void send_opponent_to_player(struct game *game, struct client *client);
 
 int port;
 char *path;
@@ -20,12 +19,7 @@ char *path;
 int unix_socket;
 int inet_socket;
 struct sockaddr_un server_unix_address;
-struct sockaddr_un client_unix_address;
 struct sockaddr_in server_inet_address;
-struct sockaddr_in client_inet_address;
-
-socklen_t unix_address_size = sizeof(struct sockaddr_un);
-socklen_t inet_address_size = sizeof(struct sockaddr_in);
 
 struct client *clients = NULL;
 struct game *games = NULL;
@@ -89,8 +83,6 @@ void init_server() {
 
     memset(&server_unix_address, 0, sizeof(server_unix_address));
     memset(&server_inet_address, 0, sizeof(server_inet_address));
-    memset(&client_unix_address, 0, sizeof(client_unix_address));
-    memset(&client_inet_address, 0, sizeof(client_inet_address));
 
     // Ustawiamy adres lokalny
     server_unix_address.sun_family = AF_UNIX;
@@ -103,8 +95,8 @@ void init_server() {
 
     printf("Binding sockets");
 
-    CHECK_RQ(bind(unix_socket, (struct sockaddr*) &server_unix_address, unix_address_size) != -1);
-    CHECK_RQ(bind(inet_socket, (struct sockaddr*) &server_inet_address, inet_address_size) != -1);
+    CHECK_RQ(bind(unix_socket, (struct sockaddr*) &server_unix_address, sizeof(struct sockaddr_un)) != -1);
+    CHECK_RQ(bind(inet_socket, (struct sockaddr*) &server_inet_address, sizeof(struct sockaddr_in)) != -1);
     printf("\t\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
 
     CHECK_RQ(listen(unix_socket, 10) != -1);
@@ -157,7 +149,7 @@ void* server_thread_function(void* tmp_client){
     clients = client;
 
     struct request request;
-    struct game *game;
+    struct game *game = NULL;
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-noreturn"
@@ -206,10 +198,13 @@ void* server_thread_function(void* tmp_client){
                     tmp = tmp->next;
                 }
                 if(tmp == NULL){ // There's no waiting players;
-                    game = malloc(sizeof(struct game));
-                    game->player_1 = client;
-                    game->next = games;
-                    games = game;
+                    if(game != NULL) game->player_2 = NULL;
+                    else {
+                        game = malloc(sizeof(struct game));
+                        game->player_1 = client;
+                        game->next = games;
+                        games = game;
+                    }
                     while(game->player_2 == NULL) pthread_cond_wait(&waiting_cond, &waiting_player_mutex);
                     pthread_mutex_unlock(&waiting_player_mutex);
                 }
@@ -230,9 +225,12 @@ void* server_thread_function(void* tmp_client){
             case GAME_STATE:
                 if(request.gameState == DISCONN){
                     pthread_mutex_lock(&send_to_opponent_mutex);
-                    pthread_mutex_lock(&client_list_mutex);
+                    pthread_mutex_lock(&waiting_player_mutex);
+//                    TODO: Save in history
+                    printf("User %s surrendered!\n", request.name);
                     CHECK(send(request.opponent_socket, (void *) &request, sizeof(request), 0));
-                    pthread_mutex_unlock(&client_list_mutex);
+
+                    pthread_mutex_unlock(&waiting_player_mutex);
                     pthread_mutex_unlock(&send_to_opponent_mutex);
                 }
                 break;

@@ -56,13 +56,6 @@ typedef enum {
 } action_en;
 
 typedef enum {
-    CONNECTED,
-    ERROR,
-    DISCONNECTED,
-    OPPONENT
-} server_info_en;
-
-typedef enum {
     WIN,
     GAME_ON,
     LOSE,
@@ -86,7 +79,6 @@ struct request{
     int opponent_socket;  // GAME.SERVER_INFO.OPPONENT_SOCKET to w opponent_socket.socket przeciwnika
     action_en action;
     struct fieldPoint fieldPoint;
-    server_info_en server_info;
     gamestate_en gameState;
     char sign;
 };
