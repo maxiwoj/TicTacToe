@@ -19,9 +19,11 @@
 #include <pthread.h>
 
 
-#define history "history"
+#define history_dir "history"
+#define HISTORY_MSG_LENGTH 200
 #define FIELD_SIZE_COLS 150
 #define FIELD_SIZE_ROWS 50
+#define NUMBER_OF_SIGNS_WINNING 2
 #define CLIENT_NAME_LENGTH 50
 #define MAX_CLIENTS 20
 
@@ -52,7 +54,6 @@ typedef enum {
     GAME_STATE, 	//GAME,WIN,LOSS,DISCONNECT
     OPPONENT_MOVED, 	//GAME READY
     HISTORY,
-    SERVER_INFO
 } action_en;
 
 typedef enum {
@@ -81,13 +82,12 @@ struct request{
     struct fieldPoint fieldPoint;
     gamestate_en gameState;
     char sign;
+    char history[HISTORY_MSG_LENGTH];
 };
 
 struct game {
     struct client *player_1;
     struct client *player_2;
-    int ready_player_1;
-    int ready_player_2;
     struct game* next;
 };
 

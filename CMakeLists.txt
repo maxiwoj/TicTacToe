@@ -10,7 +10,6 @@ set(SOURCE_FILES
         client.c
         server.c
         common.h
-#        clientMenu.c
         )
 
 add_executable(TicTacToe ${SOURCE_FILES})

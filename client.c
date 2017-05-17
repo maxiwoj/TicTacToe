@@ -35,12 +35,17 @@ void initField();
 void sendNotificationClientWon();
 void play();
 short checkWon(int y, int x, char sign) ;
-
 void sendNotificationClientMoved();
-
 int kbhit(void);
-
 int getUsrInput();
+short belongsToTheField(int y, int x);
+void reverseWinningFields(int y, int x, char sign, short way);
+
+void communicateWithServer();
+
+void askForHistory();
+
+void endGameAndSendGameDisconnect();
 
 int main(int argc, char **argv){
     CHECK(atexit(atexit_function) == 0);
@@ -56,16 +61,28 @@ int main(int argc, char **argv){
 
     registerClient();
 
+    communicateWithServer();
+}
+
+void communicateWithServer() {
     struct request response;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-noreturn"
     while(1){
         CHECK(recv(socket_fd, (void*) &response, sizeof(response), 0) != -1);
         switch(response.action){
-            case CHECK_HISTORY:break;
             case GAME_STATE:
                 if(response.gameState == LOSE){
-//                    TODO:
+                    pthread_mutex_lock(&game_mutex);
+                    if(checkWon(response.fieldPoint.y, response.fieldPoint.x, response.sign) == WIN);
+                    mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2, "YOU LOSE");
+                    refresh();
+                    my_turn = 1;
+                    game_state = 0;
+                    shouldWait = 1;
+                    getUsrInput();
+                    pthread_cond_signal(&waiting_cond);
+                    pthread_mutex_unlock(&game_mutex);
                 } else if(response.gameState == GAME_ON){ //opponent has been found
                     pthread_mutex_lock(&game_mutex);
                     opponent_socket = response.opponent_socket;
@@ -93,11 +110,21 @@ int main(int argc, char **argv){
                 field[y][x] = response.sign;
                 mvprintw(y,x,"%c",response.sign);
                 my_turn = 1;
+                mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2 - 5, "YOUR TURN");
+                getUsrInput();
+                for(int i = FIELD_SIZE_COLS/2 - 5 ; i < FIELD_SIZE_COLS/2 + 5 ; i++){
+                    mvprintw(FIELD_SIZE_ROWS - 1, i, "%c",field[FIELD_SIZE_ROWS -1][i] != 0 ? field[FIELD_SIZE_ROWS -1][i] : ' ');
+                }
+                move(curr_y,curr_x);
                 pthread_cond_signal(&waiting_cond);
                 pthread_mutex_unlock(&game_mutex);
                 break;
-            case HISTORY:break;
-            case SERVER_INFO:break;
+            case HISTORY:
+                pthread_mutex_lock(&mutex);
+                printw(response.history);
+                refresh();
+                pthread_mutex_unlock(&mutex);
+                break;
         }
     }
 #pragma clang diagnostic pop
@@ -140,6 +167,7 @@ void get_arguments(int argc, char **argv) {
             scanf("%s", server_path);
         } else {
             printf("Type server ip: ");
+            ip = calloc(20, sizeof(char));
             scanf("%s", ip);
             printf("Type server port: ");
             scanf("%d", &server_port);
@@ -222,6 +250,7 @@ void init_client(){
 
 void *menu(){
     initscr();
+    scrollok(stdscr,true);
     mvprintw(FIELD_SIZE_ROWS-1,0,"Przycisnij przycisk aby rozpoczac...\n");
 
     noecho();
@@ -246,7 +275,7 @@ void *menu(){
                 case 1:
                     clear();
                     mvprintw(1,(FIELD_SIZE_COLS/2)-3,"Gramy!");
-                    mvprintw(FIELD_SIZE_ROWS-4,0,"pamietaj, ze jezeli wyjdziesz z gry poprzez nacisniecie przycisku, twoja gra zostanie zapisana!\n");
+                    mvprintw(FIELD_SIZE_ROWS-4,0,"pamietaj, wyjscie z gry bedzie oznaczalo poddanie sie!\n");
                     printw("Wcisnij dowolny przycisk aby rozpoczac...\n");
                     printw("Esc - powrot do menu");
                     move(FIELD_SIZE_ROWS-1,0);
@@ -255,15 +284,20 @@ void *menu(){
                         pthread_mutex_lock(&game_mutex);
                         game_state = 1;
                         pthread_mutex_unlock(&game_mutex);
-
                         startGame();
                     }
                     clear();
                     break;
                 case 2:
                     clear();
-//                    TODO: historia()
-                    while(user_action != 27) user_action=getUsrInput();
+                    move(0,0);
+
+                    askForHistory();
+                    while(user_action != 27) {
+                        user_action=getUsrInput();
+                        if(user_action == 259) scrl(2);
+                        else if(user_action == 258) scrl(-2);
+                    }
                     clear();
                     break;
                 case 3:
@@ -299,9 +333,17 @@ void *menu(){
         mvprintw(FIELD_SIZE_ROWS-1,0,"Game created and produced by Maksymilian Wojczuk");
     } while( thread_is_alive);			//to end the loop you need to hit enter on "exit"
 //    getUsrInput();
+    scrollok(stdscr,false);
     endwin();
     kill(getpid(), SIGINT);
     return NULL;
+}
+
+void askForHistory() {
+    struct request request;
+    request.action = HISTORY;
+    strcpy(request.name, clientName);
+    CHECK(send(socket_fd, &request, sizeof(request), 0) != -1);
 }
 
 void startGame() {
@@ -325,22 +367,18 @@ void startGame() {
 void play() {
     clear();
     move(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2);
-    while(game_state==1 && thread_is_alive==1){
+    while(game_state && thread_is_alive){
         pthread_mutex_lock(&game_mutex);
         while(!my_turn) pthread_cond_wait(&waiting_cond, &game_mutex);
-        mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2 - 5, "YOUR TURN");
-        getUsrInput();
-        for(int i = FIELD_SIZE_COLS/2 - 5 ; i < FIELD_SIZE_COLS/2 + 5 ; i++){
-            mvprintw(FIELD_SIZE_ROWS - 1, i, "%c",field[FIELD_SIZE_ROWS -1][i] != 0 ? field[FIELD_SIZE_ROWS -1][i] : ' ');
-        }
-        move(curr_y,curr_x);
+        if(!game_state || !thread_is_alive) break;
         if(makeMove() == WIN){
-            sendNotificationClientMoved();
             sendNotificationClientWon();
-            clear();
+//            sendNotificationClientMoved();
             mvprintw(FIELD_SIZE_ROWS-1, FIELD_SIZE_COLS/2 - 5, "WINNER!!!");
             refresh();
             getUsrInput();
+            clear();
+            game_state = 0;
         } else if(game_state && thread_is_alive) sendNotificationClientMoved();
         pthread_mutex_unlock(&game_mutex);
     }
@@ -370,8 +408,8 @@ gamestate_en makeMove() {
                 move(curr_y,curr_x);
                 break;
             case 27:
-//                TODO: End the game and send GAME disconnect
-//                return;
+                endGameAndSendGameDisconnect();
+                return DISCONN;
             default:
                 pthread_mutex_lock(&game_mutex);
                 if(field[curr_y][curr_x] == 0 && (user_action == 32 || user_action == 10)) {
@@ -386,6 +424,17 @@ gamestate_en makeMove() {
                 break;
         }
     }
+}
+
+void endGameAndSendGameDisconnect() {
+    struct request request;
+    strcpy(request.name, clientName);
+    request.gameState = DISCONN;
+    request.action = GAME_STATE;
+    request.opponent_socket = opponent_socket;
+    pthread_mutex_lock(&mutex);
+    CHECK(send(socket_fd, (void*) &request, sizeof(request), 0) != -1);
+    game_state = 0;
 }
 
 void sendNotificationClientMoved() {
@@ -411,13 +460,92 @@ void initField() {
 }
 
 void sendNotificationClientWon() {
-//TODO: notify, send sign!
+    struct request request;
+    strcpy(request.name, clientName);
+    request.action = GAME_STATE;
+    request.gameState = WIN;
+    request.sign = sign;
+    request.opponent_socket = opponent_socket;
+    struct fieldPoint fieldPoint;
+    fieldPoint.y = curr_y;
+    fieldPoint.x = curr_x;
+    request.fieldPoint = fieldPoint;
+    CHECK(send(socket_fd,&request, sizeof(request), 0) != -1);
 }
 
 short checkWon(int y, int x, char sign) {
-//    TODO: logic of winning
-//    TODO: Reverse winning fields
+    int numberOfSignsNear = 0;
+    short checkingWay = 1;
+    for(int i = -5 ; i < 6 ; i++){
+        if(belongsToTheField(y,x)){
+            if(field[y+i][x+i] == sign) numberOfSignsNear++;
+            else numberOfSignsNear = 0;
+            if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
+                reverseWinningFields(y, x, sign, checkingWay);
+                return 1;
+            }
+        }
+    }
+    numberOfSignsNear = 0;
+    checkingWay = 2;
+    for(int i = -5 ; i < 6 ; i++){
+        if(belongsToTheField(y,x)){
+            if(field[y-i][x+i] == sign) numberOfSignsNear++;
+            else numberOfSignsNear = 0;
+            if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
+                reverseWinningFields(y, x, sign, checkingWay);
+                return 1;
+            }
+        }
+    }
+    numberOfSignsNear = 0;
+    checkingWay = 3;
+    for(int i = -5 ; i < 6 ; i++){
+        if(belongsToTheField(y,x)){
+            if(field[y][x+i] == sign) numberOfSignsNear++;
+            else numberOfSignsNear = 0;
+            if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
+                reverseWinningFields(y, x, sign, checkingWay);
+                return 1;
+            }
+        }
+    }
+    numberOfSignsNear = 0;
+    checkingWay = 4;
+    for(int i = -5 ; i < 6 ; i++){
+        if(belongsToTheField(y,x)){
+            if(field[y+i][x] == sign) numberOfSignsNear++;
+            else numberOfSignsNear = 0;
+            if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
+                reverseWinningFields(y, x, sign, checkingWay);
+                return 1;
+            }
+        }
+    }
     return 0;
+}
+
+void reverseWinningFields(int y, int x, char sign, short way) {
+    attron( A_REVERSE );
+    switch(way){
+        case 1:
+            for(int i = 0 ; i < NUMBER_OF_SIGNS_WINNING ; i++) mvprintw(y-i, x-i, "%c", sign);
+            break;
+        case 2:
+            for(int i = 0 ; i < NUMBER_OF_SIGNS_WINNING ; i++) mvprintw(y+i, x-i, "%c", sign);
+            break;
+        case 3:
+            for(int i = 0 ; i < NUMBER_OF_SIGNS_WINNING ; i++) mvprintw(y, x-i, "%c", sign);
+            break;
+        case 4:
+            for(int i = 0 ; i < NUMBER_OF_SIGNS_WINNING; i++) mvprintw(y-i, x, "%c", sign);
+            break;
+    }
+    attroff( A_REVERSE );
+}
+
+short belongsToTheField(int y, int x) {
+    return y >= 0 && y < FIELD_SIZE_ROWS && x >= 0 && x < FIELD_SIZE_COLS;
 }
 
 int kbhit(void){
