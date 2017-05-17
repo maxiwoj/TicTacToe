@@ -5,7 +5,11 @@ int curr_x = FIELD_SIZE_COLS/2;
 int curr_y = FIELD_SIZE_ROWS/2;
 int shouldWait=1;
 int game_state=0;
-int my_turn=0;
+int my_turn=1;
+int thread_is_alive = 1;
+short registered = 0;
+char sign;
+
 int opponent_socket;
 int local_flag = 1;
 int server_port;
@@ -14,10 +18,6 @@ char* ip;
 char clientName[CLIENT_NAME_LENGTH];
 int socket_fd;
 pthread_t thread;
-int thread_is_alive = 1;
-short registered = 0;
-char sign;
-int movesCount = 0;
 char field[FIELD_SIZE_ROWS][FIELD_SIZE_COLS];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -74,12 +74,14 @@ void communicateWithServer() {
             case GAME_STATE:
                 if(response.gameState == LOSE){
                     pthread_mutex_lock(&game_mutex);
-                    if(checkWon(response.fieldPoint.y, response.fieldPoint.x, response.sign) == WIN);
+                    field[response.fieldPoint.y][response.fieldPoint.x] = response.sign;
+                    mvprintw(response.fieldPoint.y, response.fieldPoint.x, "%c", response.sign);
+                    checkWon(response.fieldPoint.y, response.fieldPoint.x, response.sign);
                     mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2, "YOU LOSE");
                     refresh();
                     my_turn = 1;
-                    game_state = 0;
                     shouldWait = 1;
+                    game_state = 0;
                     getUsrInput();
                     pthread_cond_signal(&waiting_cond);
                     pthread_mutex_unlock(&game_mutex);
@@ -88,17 +90,16 @@ void communicateWithServer() {
                     opponent_socket = response.opponent_socket;
                     sign = response.sign;
                     my_turn = sign == 'X' ? 1 : 0;
-                    mvprintw(FIELD_SIZE_ROWS, 0,"enemy found \033[32m[ OK ]\033[0m\n");
                     shouldWait=0;
                     pthread_cond_signal(&waiting_cond);
                     pthread_mutex_unlock(&game_mutex);
                 } else if(response.gameState == DISCONN){
                     pthread_mutex_lock(&game_mutex);
-                    mvprintw(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2 - 30,"\tPlayer %s disconected, which implies you winned by walkover\t");
+                    mvprintw(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2 - 30,"\tPlayer %s disconected, which implies you winned by walkover\t", response.name);
                     refresh();
                     my_turn = 1;
-                    game_state = 0;
                     shouldWait = 1;
+                    game_state = 0;
                     pthread_cond_signal(&waiting_cond);
                     pthread_mutex_unlock(&game_mutex);
                 }
@@ -282,7 +283,6 @@ void *menu(){
                     user_action=getUsrInput();
                     if(user_action!=27){
                         pthread_mutex_lock(&game_mutex);
-                        game_state = 1;
                         pthread_mutex_unlock(&game_mutex);
                         startGame();
                     }
@@ -360,7 +360,7 @@ void startGame() {
     while(shouldWait)
         pthread_cond_wait(&waiting_cond, &game_mutex);
     pthread_mutex_unlock(&game_mutex);
-
+    game_state = 1;
     play();
 }
 
@@ -370,7 +370,10 @@ void play() {
     while(game_state && thread_is_alive){
         pthread_mutex_lock(&game_mutex);
         while(!my_turn) pthread_cond_wait(&waiting_cond, &game_mutex);
-        if(!game_state || !thread_is_alive) break;
+        if(!game_state || !thread_is_alive) {
+            pthread_mutex_unlock(&game_mutex);
+            break;
+        }
         if(makeMove() == WIN){
             sendNotificationClientWon();
 //            sendNotificationClientMoved();
@@ -379,6 +382,8 @@ void play() {
             getUsrInput();
             clear();
             game_state = 0;
+            my_turn = 1;
+            shouldWait = 1;
         } else if(game_state && thread_is_alive) sendNotificationClientMoved();
         pthread_mutex_unlock(&game_mutex);
     }
@@ -416,7 +421,6 @@ gamestate_en makeMove() {
                     field[curr_y][curr_x] = sign;
                     mvprintw(curr_y,curr_x,"%c", sign);
                     refresh();
-                    movesCount++;
                     if(checkWon(curr_y,curr_x,sign)) return WIN;
                     else return GAME_ON;
                 }
@@ -481,7 +485,7 @@ short checkWon(int y, int x, char sign) {
             if(field[y+i][x+i] == sign) numberOfSignsNear++;
             else numberOfSignsNear = 0;
             if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
-                reverseWinningFields(y, x, sign, checkingWay);
+                reverseWinningFields(y + i, x + i, sign, checkingWay);
                 return 1;
             }
         }
@@ -493,7 +497,7 @@ short checkWon(int y, int x, char sign) {
             if(field[y-i][x+i] == sign) numberOfSignsNear++;
             else numberOfSignsNear = 0;
             if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
-                reverseWinningFields(y, x, sign, checkingWay);
+                reverseWinningFields(y - i, x + i, sign, checkingWay);
                 return 1;
             }
         }
@@ -505,7 +509,7 @@ short checkWon(int y, int x, char sign) {
             if(field[y][x+i] == sign) numberOfSignsNear++;
             else numberOfSignsNear = 0;
             if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
-                reverseWinningFields(y, x, sign, checkingWay);
+                reverseWinningFields(y, x + i, sign, checkingWay);
                 return 1;
             }
         }
@@ -517,7 +521,7 @@ short checkWon(int y, int x, char sign) {
             if(field[y+i][x] == sign) numberOfSignsNear++;
             else numberOfSignsNear = 0;
             if(numberOfSignsNear == NUMBER_OF_SIGNS_WINNING) {
-                reverseWinningFields(y, x, sign, checkingWay);
+                reverseWinningFields(y + i, x, sign, checkingWay);
                 return 1;
             }
         }
