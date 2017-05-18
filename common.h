@@ -23,7 +23,7 @@
 #define HISTORY_MSG_LENGTH 200
 #define FIELD_SIZE_COLS 150
 #define FIELD_SIZE_ROWS 50
-#define NUMBER_OF_SIGNS_WINNING 2
+#define NUMBER_OF_SIGNS_WINNING 3
 #define CLIENT_NAME_LENGTH 50
 #define MAX_CLIENTS 20
 
@@ -89,6 +89,11 @@ struct game {
     struct client *player_1;
     struct client *player_2;
     struct game* next;
+};
+
+struct threadSpecificArgs{
+    struct game *game;
+    struct client *client;
 };
 
 

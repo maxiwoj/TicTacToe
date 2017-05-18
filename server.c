@@ -18,6 +18,8 @@ void save_player_history(struct request request, struct client *pClient);
 
 void check_and_send_history(struct client *pClient);
 
+void *waitForPlayer(void *waitingThreadSpecific);
+
 int port;
 char *path;
 
@@ -67,6 +69,7 @@ void get_args(int argc, char** argv) {
     } else{
         printf("Type port for network gaming: ");
         scanf("%d", &port);
+        path = malloc(200 * sizeof(char));
         printf("Type path for local gaming: ");
         scanf("%s", path);
     }
@@ -152,6 +155,8 @@ void* server_thread_function(void* tmp_client){
     client->next = clients;
     clients = client;
 
+    pthread_t threadWaitingForGame = 0;
+
     struct request request;
     struct game *game = NULL;
 
@@ -171,8 +176,13 @@ void* server_thread_function(void* tmp_client){
                 fflush(stdout);
                 pthread_mutex_lock(&client_list_mutex);
                 unregister_client(client);
+                if(pthread_cancel(threadWaitingForGame) != ESRCH){
+                    pthread_mutex_lock(&waiting_player_mutex);
+                    game->player_2 = game->player_1; //make sure it is not null
+                    pthread_mutex_unlock(&waiting_player_mutex);
+                }
                 pthread_mutex_unlock(&client_list_mutex);
-                CHECK(pthread_cancel(client->thread) != -1);
+                CHECK(pthread_cancel(pthread_self()) == 0);
                 printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 break;
             case HISTORY:
@@ -195,30 +205,34 @@ void* server_thread_function(void* tmp_client){
                     if(tmp->player_2 == NULL){
                         tmp->player_2 = client;
                         game = tmp;
-                        pthread_cond_signal(&waiting_cond);
+                        pthread_cond_broadcast(&waiting_cond);
                         pthread_mutex_unlock(&waiting_player_mutex);
                         break;
                     }
                     tmp = tmp->next;
                 }
+                pthread_mutex_unlock(&waiting_player_mutex);
                 if(tmp == NULL){ // There's no waiting players;
-                    if(game != NULL) game->player_2 = NULL; //player has already played, but the game ended
-                    else {
-                        game = malloc(sizeof(struct game));
-                        game->player_1 = client;
-                        game->next = games;
-                        games = game;
-                    }
-                    while(game->player_2 == NULL) pthread_cond_wait(&waiting_cond, &waiting_player_mutex);
+                    game = malloc(sizeof(struct game));
+                    game->player_1 = client;
+                    game->player_2 = NULL;
+                    game->next = games;
+                    pthread_mutex_lock(&waiting_player_mutex);
+                    games = game;
                     pthread_mutex_unlock(&waiting_player_mutex);
+                    struct threadSpecificArgs args;
+                    args.client = client;
+                    args.game = game;
+                    CHECK(pthread_create(&threadWaitingForGame, NULL, waitForPlayer, &args) != -1);
+                } else {
+                    printf("Game has been found");
+                    pthread_mutex_lock(&send_to_opponent_mutex);
+                    send_opponent_to_player(game,client);
+                    pthread_mutex_unlock(&send_to_opponent_mutex);
+
+                    printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 }
 
-                printf("Game has been found\n");
-                pthread_mutex_lock(&send_to_opponent_mutex);
-                send_opponent_to_player(game,client);
-                pthread_mutex_unlock(&send_to_opponent_mutex);
-
-                printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 break;
             case OPPONENT_MOVED:
                 printf("Player %s moved\n", request.name);
@@ -239,7 +253,8 @@ void* server_thread_function(void* tmp_client){
                     CHECK(send(request.opponent_socket,&request, sizeof(request),0) != -1);
                     pthread_mutex_unlock(&send_to_opponent_mutex);
                 }
-                printf("Saving history for player %s",client->name);
+                printf("Saving history for player %s\n",game->player_2->name);
+                printf("Saving history for player %s\n",game->player_1->name);
                 pthread_mutex_lock(&history_mutex);
                 save_player_history(request, game->player_1);
                 save_player_history(request, game->player_2);
@@ -251,6 +266,28 @@ void* server_thread_function(void* tmp_client){
         }
     }
 #pragma clang diagnostic pop
+}
+
+void waitingForPlayerCleanUp(void *args){
+    pthread_mutex_unlock(&waiting_player_mutex);
+    pthread_mutex_unlock(&send_to_opponent_mutex);
+}
+void *waitForPlayer(void *waitingThreadSpecific){
+    pthread_cleanup_push(waitingForPlayerCleanUp,NULL);
+        struct threadSpecificArgs *threadSpecificArgs = waitingThreadSpecific;
+
+        pthread_mutex_lock(&waiting_player_mutex);
+        while(threadSpecificArgs->game->player_2 == NULL) pthread_cond_wait(&waiting_cond, &waiting_player_mutex);
+        pthread_mutex_unlock(&waiting_player_mutex);
+
+        printf("Opponent for %s has been found", threadSpecificArgs->client->name);
+        pthread_mutex_lock(&send_to_opponent_mutex);
+        send_opponent_to_player(threadSpecificArgs->game,threadSpecificArgs->client);
+        pthread_mutex_unlock(&send_to_opponent_mutex);
+
+        printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
+    pthread_cleanup_pop(1);
+    return NULL;
 }
 
 void check_and_send_history(struct client *pClient) {
@@ -287,8 +324,9 @@ void check_and_send_history(struct client *pClient) {
 
 void save_player_history(struct request request, struct client *pClient) {
     FILE * pFILE;
-    time_t rawtime;
-    struct tm* timeinfo;
+    time_t timer;
+    char buffer[26];
+    struct tm* tm_info;
     char filePath[CLIENT_NAME_LENGTH - strlen(history_dir) - 2];
 
     strcpy(filePath,history_dir);
@@ -297,10 +335,12 @@ void save_player_history(struct request request, struct client *pClient) {
     pFILE= fopen(filePath,"a");
     CHECK(pFILE != NULL);
 
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);
-    fprintf(pFILE,"%s", asctime(timeinfo));
-    fprintf(pFILE,":");
+    time(&timer);
+    tm_info = localtime(&timer);
+    strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+
+    fprintf(pFILE,"%s",buffer);
+    fprintf(pFILE,": ");
     if(request.opponent_socket == pClient->socket) {
         if(request.gameState == LOSE) fprintf(pFILE, "LOSE");
         else fprintf(pFILE, "Win by walkover");
