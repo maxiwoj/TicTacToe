@@ -92,8 +92,8 @@ struct game {
 };
 
 struct threadSpecificArgs{
-    struct game game;
-    struct client client;
+    struct game *game;
+    struct client *client;
 };
 
 

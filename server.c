@@ -181,7 +181,6 @@ void* server_thread_function(void* tmp_client){
                     game->player_2 = game->player_1; //make sure it is not null
                     pthread_mutex_unlock(&waiting_player_mutex);
                 }
-
                 pthread_mutex_unlock(&client_list_mutex);
                 CHECK(pthread_cancel(pthread_self()) == 0);
                 printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
@@ -206,7 +205,7 @@ void* server_thread_function(void* tmp_client){
                     if(tmp->player_2 == NULL){
                         tmp->player_2 = client;
                         game = tmp;
-                        pthread_cond_signal(&waiting_cond);
+                        pthread_cond_broadcast(&waiting_cond);
                         pthread_mutex_unlock(&waiting_player_mutex);
                         break;
                     }
@@ -216,16 +215,16 @@ void* server_thread_function(void* tmp_client){
                 if(tmp == NULL){ // There's no waiting players;
                     game = malloc(sizeof(struct game));
                     game->player_1 = client;
+                    game->player_2 = NULL;
                     game->next = games;
                     pthread_mutex_lock(&waiting_player_mutex);
                     games = game;
                     pthread_mutex_unlock(&waiting_player_mutex);
                     struct threadSpecificArgs args;
-                    args.client = *client;
-                    args.game = *game;
+                    args.client = client;
+                    args.game = game;
                     CHECK(pthread_create(&threadWaitingForGame, NULL, waitForPlayer, &args) != -1);
-                }
-                if(!threadWaitingForGame){
+                } else {
                     printf("Game has been found");
                     pthread_mutex_lock(&send_to_opponent_mutex);
                     send_opponent_to_player(game,client);
@@ -254,8 +253,8 @@ void* server_thread_function(void* tmp_client){
                     CHECK(send(request.opponent_socket,&request, sizeof(request),0) != -1);
                     pthread_mutex_unlock(&send_to_opponent_mutex);
                 }
-                printf("Saving history for player %s",game->player_2->name);
-                printf("Saving history for player %s",game->player_1->name);
+                printf("Saving history for player %s\n",game->player_2->name);
+                printf("Saving history for player %s\n",game->player_1->name);
                 pthread_mutex_lock(&history_mutex);
                 save_player_history(request, game->player_1);
                 save_player_history(request, game->player_2);
@@ -269,19 +268,25 @@ void* server_thread_function(void* tmp_client){
 #pragma clang diagnostic pop
 }
 
-void *waitForPlayer(void *waitingThreadSpecific){
-    struct threadSpecificArgs *threadSpecificArgs = waitingThreadSpecific;
-
-    pthread_mutex_lock(&waiting_player_mutex);
-    while(threadSpecificArgs->game.player_2 == NULL) pthread_cond_wait(&waiting_cond, &waiting_player_mutex);
+void waitingForPlayerCleanUp(void *args){
     pthread_mutex_unlock(&waiting_player_mutex);
-
-    printf("Opponent for %s has been found", threadSpecificArgs->client.name);
-    pthread_mutex_lock(&send_to_opponent_mutex);
-    send_opponent_to_player(&threadSpecificArgs->game,&threadSpecificArgs->client);
     pthread_mutex_unlock(&send_to_opponent_mutex);
+}
+void *waitForPlayer(void *waitingThreadSpecific){
+    pthread_cleanup_push(waitingForPlayerCleanUp,NULL);
+        struct threadSpecificArgs *threadSpecificArgs = waitingThreadSpecific;
 
-    printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
+        pthread_mutex_lock(&waiting_player_mutex);
+        while(threadSpecificArgs->game->player_2 == NULL) pthread_cond_wait(&waiting_cond, &waiting_player_mutex);
+        pthread_mutex_unlock(&waiting_player_mutex);
+
+        printf("Opponent for %s has been found", threadSpecificArgs->client->name);
+        pthread_mutex_lock(&send_to_opponent_mutex);
+        send_opponent_to_player(threadSpecificArgs->game,threadSpecificArgs->client);
+        pthread_mutex_unlock(&send_to_opponent_mutex);
+
+        printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
+    pthread_cleanup_pop(1);
     return NULL;
 }
 
