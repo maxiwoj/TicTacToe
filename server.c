@@ -4,305 +4,276 @@
 //
 // Created by maxx on 5/13/17.
 //
-void exit_handler(int signo);
-void atexit_function();
-void* server_thread_function(void* tmp_client);
-int clients_count();
-void unregister_client(struct client *pClient);
-void get_args(int argc, char** argv) ;
-void init_server();
-void listen_function() ;
-void send_opponent_to_player(struct game *game, struct client *client);
-
-void save_player_history(struct request request, struct client *pClient);
-
-void check_and_send_history(struct client *pClient);
-
-void *waitForPlayer(void *waitingThreadSpecific);
+void signalHandler(int signo);
+void cleanUpFuntion();
+void* clientServiceThread(void *tmpClient);
+int getNumberOfClients();
+void unregisterClient(struct client *pClient);
+void getArgs(int argc, char **argv) ;
+void initServer();
+void newClientListener() ;
+void notifyOpponent(struct game *game, struct client *client);
+void saveClientHistory(struct request request, struct client *pClient);
+void sendHistory(struct client *pClient);
+void *waitForOpponentThread(void *waitingThreadSpecific);
 
 int port;
-char *path;
+char *socketPath;
 
-int unix_socket;
-int inet_socket;
-struct sockaddr_un server_unix_address;
-struct sockaddr_in server_inet_address;
+int UnixSocket;
+int inetSocket;
+struct sockaddr_un unixServerAddress;
+struct sockaddr_in inetServerAddress;
 
 struct client *clients = NULL;
 struct game *games = NULL;
 
-pthread_mutex_t client_list_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t history_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t send_to_opponent_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t waiting_player_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t clientListMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t historyMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t sendToClientMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t gamesMutex = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_cond_t waiting_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t playerWaitingForGameCond = PTHREAD_COND_INITIALIZER;
 
 
 int main(int argc, char **argv){
-    atexit(atexit_function);
-    get_args(argc, argv);
+    atexit(cleanUpFuntion);
+    getArgs(argc, argv);
 
-    CHECK(signal(SIGTSTP, exit_handler) != SIG_ERR);
-    CHECK(signal(SIGINT, exit_handler) != SIG_ERR);
+    CHECK(signal(SIGTSTP, signalHandler) != SIG_ERR);
+    CHECK(signal(SIGINT, signalHandler) != SIG_ERR);
 
-    init_server();
-    listen_function();
+    initServer();
+    newClientListener();
     return 0;
 }
 
 
-void atexit_function() {
-    //int i;
-    /*for(i=0;i<client_counter;i++){
-        shutdown(clients[i],SHUT_RDWR);
-    }*/
-    close(unix_socket);
-    close(inet_socket);
-    remove(path);
+void cleanUpFuntion() {
+    close(UnixSocket);
+    close(inetSocket);
+    remove(socketPath);
 }
 
-void get_args(int argc, char** argv) {
+void getArgs(int argc, char **argv) {
     if(argc == 3) {
         port = atoi(argv[1]);
-        path = argv[2];
+        socketPath = argv[2];
     } else{
         printf("Type port for network gaming: ");
         scanf("%d", &port);
-        path = malloc(200 * sizeof(char));
+        socketPath = malloc(200 * sizeof(char));
         printf("Type path for local gaming: ");
-        scanf("%s", path);
+        scanf("%s", socketPath);
     }
 }
 
-void exit_handler(int signo) {
-    if(signo == SIGTSTP)
-        exit(EXIT_SUCCESS);
+void signalHandler(int signo) {
+    exit(EXIT_SUCCESS);
 }
 
-void init_server() {
-    printf("\nCreating server socket for local communication");
-    CHECK_RQ((unix_socket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0)) != -1);
-    printf("\t\t\033[32m[ OK ]\033[0m\n");
+void initServer() {
+    printf("\nCreating local socket\n");
+    CHECK_RQ((UnixSocket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0)) != -1);
+    printf("Creating inet socket\n");
+    CHECK_RQ((inetSocket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) != -1);
 
-    printf("Creating server socket for internet communication");
-    CHECK_RQ((inet_socket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) != -1);
-    printf("\t\033[32m[ OK ]\033[0m\n");
+    memset(&unixServerAddress, 0, sizeof(unixServerAddress));
+    memset(&inetServerAddress, 0, sizeof(inetServerAddress));
 
-    memset(&server_unix_address, 0, sizeof(server_unix_address));
-    memset(&server_inet_address, 0, sizeof(server_inet_address));
+    // set local address
+    unixServerAddress.sun_family = AF_UNIX;
+    strcpy(unixServerAddress.sun_path, socketPath);
 
-    // Ustawiamy adres lokalny
-    server_unix_address.sun_family = AF_UNIX;
-    strcpy(server_unix_address.sun_path, path);
+    // set inet address
+    inetServerAddress.sin_family = AF_INET;
+    inetServerAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+    inetServerAddress.sin_port = htons(port);
 
-    // Ustawiamy adres inet
-    server_inet_address.sin_family = AF_INET;
-    server_inet_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_inet_address.sin_port = htons(port);
+    printf("Binding sockets\n");
+    CHECK_RQ(bind(UnixSocket, (struct sockaddr*) &unixServerAddress, sizeof(struct sockaddr_un)) != -1);
+    CHECK_RQ(bind(inetSocket, (struct sockaddr*) &inetServerAddress, sizeof(struct sockaddr_in)) != -1);
 
-    printf("Binding sockets");
-
-    CHECK_RQ(bind(unix_socket, (struct sockaddr*) &server_unix_address, sizeof(struct sockaddr_un)) != -1);
-    CHECK_RQ(bind(inet_socket, (struct sockaddr*) &server_inet_address, sizeof(struct sockaddr_in)) != -1);
-    printf("\t\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
-
-    CHECK_RQ(listen(unix_socket, 10) != -1);
-    CHECK_RQ(listen(inet_socket, 10) != -1);
+    printf("starting listening for connections on socket\n");
+    CHECK_RQ(listen(UnixSocket, 10) != -1);
+    CHECK_RQ(listen(inetSocket, 10) != -1);
 
     CHECK_RQ(mkdir(history_dir,0777) == 0 || errno == EEXIST);
 }
 
-void listen_function() {
+void newClientListener() {
     printf("Waiting for clients\n");
-    struct client tmp_client;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-noreturn"
+    struct client newClient;
     while(1) {
-        pthread_mutex_lock(&client_list_mutex);
-        tmp_client.socket = accept(unix_socket, NULL, NULL);
-        if(tmp_client.socket == -1) {
-            CHECK(tmp_client.socket != EAGAIN && tmp_client.socket != EWOULDBLOCK);
-            pthread_mutex_unlock(&client_list_mutex);
+        pthread_mutex_lock(&clientListMutex);
+        newClient.socket = accept(UnixSocket, NULL, NULL);
+        if(newClient.socket == -1) {
+            pthread_mutex_unlock(&clientListMutex);
         } else {
-            CHECK(pthread_create(&tmp_client.thread, NULL, server_thread_function, &tmp_client) != -1);
+            CHECK(pthread_create(&newClient.thread, NULL, clientServiceThread, &newClient) != -1);
         }
 
-        pthread_mutex_lock(&client_list_mutex);
-        tmp_client.socket = accept(inet_socket, NULL, NULL);
-        if(tmp_client.socket == -1) {
-            CHECK(tmp_client.socket != EAGAIN && tmp_client.socket != EWOULDBLOCK);
-            pthread_mutex_unlock(&client_list_mutex);
+        pthread_mutex_lock(&clientListMutex);
+        newClient.socket = accept(inetSocket, NULL, NULL);
+        if(newClient.socket == -1) {
+            pthread_mutex_unlock(&clientListMutex);
         } else {
-            CHECK(pthread_create(&tmp_client.thread, NULL, server_thread_function, &tmp_client) != -1);
+            CHECK(pthread_create(&newClient.thread, NULL, clientServiceThread, &newClient) != -1);
         }
     }
-#pragma clang diagnostic pop
 }
 
-void* server_thread_function(void* tmp_client){
-    printf("\nNew thread created\n");
+void* clientServiceThread(void *tmpClient){
     struct client *client = malloc(sizeof(struct client));
-    client->socket = ((struct client*) tmp_client)->socket;
+    client->socket = ((struct client*) tmpClient)->socket;
+    printf("\nNew thread for client %s created\n", client->name);
     client->thread = pthread_self();
 
-    if(clients_count() >= MAX_CLIENTS) {
+    if(getNumberOfClients() >= MAX_CLIENTS) {
         printf("Too many clients, cancelling thread\n");
-        pthread_mutex_unlock(&client_list_mutex);
+        pthread_mutex_unlock(&clientListMutex);
         CHECK(pthread_cancel(client->thread) != -1);
     }
 
+    //add client
     client->next = clients;
     clients = client;
-
+    //client is not waiting for game yet
     pthread_t threadWaitingForGame = 0;
 
     struct request request;
     struct game *game = NULL;
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-noreturn"
     while(1){
         CHECK(recv(client->socket, &request, sizeof(request), 0) != -1);
         switch(request.action){
             case REGISTER_USER:
-                printf("Registering client %s", request.name);
+                printf("Registering client %s\n", request.name);
                 strcpy(client->name, request.name);
-                printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
-                pthread_mutex_unlock(&client_list_mutex);
+                pthread_mutex_unlock(&clientListMutex);
                 break;
             case DISCONNECT:
-                printf("User %s disconected", client->name);
+                printf("User %s disconected\n", client->name);
                 fflush(stdout);
-                pthread_mutex_lock(&client_list_mutex);
-                unregister_client(client);
+                pthread_mutex_lock(&clientListMutex);
+                unregisterClient(client);
                 if(pthread_cancel(threadWaitingForGame) != ESRCH){
-                    pthread_mutex_lock(&waiting_player_mutex);
-                    game->player_2 = game->player_1; //make sure it is not null
-                    pthread_mutex_unlock(&waiting_player_mutex);
+                    pthread_mutex_lock(&gamesMutex);
+                    game->player2 = game->player1; //make sure it is not null
+                    pthread_mutex_unlock(&gamesMutex);
                 }
-                pthread_mutex_unlock(&client_list_mutex);
+                pthread_mutex_unlock(&clientListMutex);
                 CHECK(pthread_cancel(pthread_self()) == 0);
-                printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 break;
             case HISTORY:
-                printf("Checking history of: %s",client->name);
-                pthread_mutex_lock(&history_mutex);
-                pthread_mutex_lock(&client_list_mutex);
-                pthread_mutex_lock(&send_to_opponent_mutex);
-                check_and_send_history(client);
-                pthread_mutex_unlock(&send_to_opponent_mutex);
-                pthread_mutex_unlock(&client_list_mutex);
-                pthread_mutex_unlock(&history_mutex);
-                printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
+                printf("Checking history of: %s\n",client->name);
+                pthread_mutex_lock(&historyMutex);
+                pthread_mutex_lock(&sendToClientMutex);
+                sendHistory(client);
+                pthread_mutex_unlock(&sendToClientMutex);
+                pthread_mutex_unlock(&historyMutex);
                 break;
             case START_GAME:
                 printf("Starting game for player: %s\n",client->name);
-                pthread_mutex_lock(&waiting_player_mutex);
+                pthread_mutex_lock(&gamesMutex);
                 struct game* tmp  = games;
                 printf("Looking for game\n");
                 while(tmp != NULL){
-                    if(tmp->player_2 == NULL){
-                        tmp->player_2 = client;
+                    if(tmp->player2 == NULL){
+                        tmp->player2 = client;
                         game = tmp;
-                        pthread_cond_broadcast(&waiting_cond);
-                        pthread_mutex_unlock(&waiting_player_mutex);
+                        pthread_cond_broadcast(&playerWaitingForGameCond);
+                        pthread_mutex_unlock(&gamesMutex);
                         break;
                     }
                     tmp = tmp->next;
                 }
-                pthread_mutex_unlock(&waiting_player_mutex);
+                pthread_mutex_unlock(&gamesMutex);
                 if(tmp == NULL){ // There's no waiting players;
                     game = malloc(sizeof(struct game));
-                    game->player_1 = client;
-                    game->player_2 = NULL;
+                    game->player1 = client;
+                    game->player2 = NULL;
                     game->next = games;
-                    pthread_mutex_lock(&waiting_player_mutex);
+                    pthread_mutex_lock(&gamesMutex);
                     games = game;
-                    pthread_mutex_unlock(&waiting_player_mutex);
+                    pthread_mutex_unlock(&gamesMutex);
                     struct threadSpecificArgs args;
                     args.client = client;
                     args.game = game;
-                    CHECK(pthread_create(&threadWaitingForGame, NULL, waitForPlayer, &args) != -1);
+                    CHECK(pthread_create(&threadWaitingForGame, NULL, waitForOpponentThread, &args) != -1);
                 } else {
-                    printf("Game has been found");
-                    pthread_mutex_lock(&send_to_opponent_mutex);
-                    send_opponent_to_player(game,client);
-                    pthread_mutex_unlock(&send_to_opponent_mutex);
+                    printf("Game has been found\n");
+                    pthread_mutex_lock(&sendToClientMutex);
+                    notifyOpponent(game, client);
+                    pthread_mutex_unlock(&sendToClientMutex);
 
-                    printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
                 }
 
                 break;
             case OPPONENT_MOVED:
                 printf("Player %s moved\n", request.name);
-                pthread_mutex_lock(&send_to_opponent_mutex);
-                CHECK(send(request.opponent_socket, (void *) &request, sizeof(request), 0));
-                pthread_mutex_unlock(&send_to_opponent_mutex);
+                pthread_mutex_lock(&sendToClientMutex);
+                CHECK(send(request.opponentSocket, (void *) &request, sizeof(request), 0));
+                pthread_mutex_unlock(&sendToClientMutex);
                 break;
             case GAME_STATE:
                 if(request.gameState == DISCONN){
-                    pthread_mutex_lock(&send_to_opponent_mutex);
+                    pthread_mutex_lock(&sendToClientMutex);
                     printf("User %s surrendered!\n", request.name);
-                    CHECK(send(request.opponent_socket, (void *) &request, sizeof(request), 0) != -1);
-                    pthread_mutex_unlock(&send_to_opponent_mutex);
+                    CHECK(send(request.opponentSocket, (void *) &request, sizeof(request), 0) != -1);
+                    pthread_mutex_unlock(&sendToClientMutex);
                 } else if(request.gameState == WIN){
-                    pthread_mutex_lock(&send_to_opponent_mutex);
+                    pthread_mutex_lock(&sendToClientMutex);
                     request.gameState = LOSE;
                     printf("User %s won!\n", request.name);
-                    CHECK(send(request.opponent_socket,&request, sizeof(request),0) != -1);
-                    pthread_mutex_unlock(&send_to_opponent_mutex);
+                    CHECK(send(request.opponentSocket,&request, sizeof(request),0) != -1);
+                    pthread_mutex_unlock(&sendToClientMutex);
                 }
-                printf("Saving history for player %s\n",game->player_2->name);
-                printf("Saving history for player %s\n",game->player_1->name);
-                pthread_mutex_lock(&history_mutex);
-                save_player_history(request, game->player_1);
-                save_player_history(request, game->player_2);
-                pthread_mutex_unlock(&history_mutex);
-                printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
+                printf("Saving history for player %s\n",game->player2->name);
+                printf("Saving history for player %s\n",game->player1->name);
+                pthread_mutex_lock(&historyMutex);
+                saveClientHistory(request, game->player1);
+                saveClientHistory(request, game->player2);
+                pthread_mutex_unlock(&historyMutex);
                 break;
-            default:
-                printf("Request received but not recognized: %d\n", request.action);
         }
     }
-#pragma clang diagnostic pop
 }
 
 void waitingForPlayerCleanUp(void *args){
-    pthread_mutex_unlock(&waiting_player_mutex);
-    pthread_mutex_unlock(&send_to_opponent_mutex);
+    pthread_mutex_unlock(&gamesMutex);
+    pthread_mutex_unlock(&sendToClientMutex);
 }
-void *waitForPlayer(void *waitingThreadSpecific){
+void *waitForOpponentThread(void *waitingThreadSpecific){
     pthread_cleanup_push(waitingForPlayerCleanUp,NULL);
         struct threadSpecificArgs *threadSpecificArgs = waitingThreadSpecific;
 
-        pthread_mutex_lock(&waiting_player_mutex);
-        while(threadSpecificArgs->game->player_2 == NULL) pthread_cond_wait(&waiting_cond, &waiting_player_mutex);
-        pthread_mutex_unlock(&waiting_player_mutex);
+        pthread_mutex_lock(&gamesMutex);
+        while(threadSpecificArgs->game->player2 == NULL) pthread_cond_wait(&playerWaitingForGameCond, &gamesMutex);
+        pthread_mutex_unlock(&gamesMutex);
 
-        printf("Opponent for %s has been found", threadSpecificArgs->client->name);
-        pthread_mutex_lock(&send_to_opponent_mutex);
-        send_opponent_to_player(threadSpecificArgs->game,threadSpecificArgs->client);
-        pthread_mutex_unlock(&send_to_opponent_mutex);
+        printf("Opponent for %s has been found\n", threadSpecificArgs->client->name);
+        pthread_mutex_lock(&sendToClientMutex);
+            notifyOpponent(threadSpecificArgs->game, threadSpecificArgs->client);
+        pthread_mutex_unlock(&sendToClientMutex);
 
-        printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
     pthread_cleanup_pop(1);
     return NULL;
 }
 
-void check_and_send_history(struct client *pClient) {
-    char file_name[100];
+void sendHistory(struct client *pClient) {
+    char historyFilename[100];
     char msg[HISTORY_MSG_LENGTH], *result;
 
     FILE *plik;
     struct request response;
     response.action = HISTORY;
-    strcpy(file_name,history_dir);
-    strcat(file_name,"/");
-    strcat(file_name,pClient->name);
-    plik = fopen(file_name,"r");
+    strcpy(historyFilename,history_dir);
+    strcat(historyFilename,"/");
+    strcat(historyFilename,pClient->name);
+    plik = fopen(historyFilename,"r");
     if(plik == NULL){
-        strcpy(response.history, "You don't have any history\n");
+        strcpy(response.history, "No history yet, try to change that by playing the game!\n");
         CHECK(send(pClient->socket,(void*) &response, sizeof(response),0) != -1);
     }else{
         while(1){
@@ -318,16 +289,13 @@ void check_and_send_history(struct client *pClient) {
 
         fclose(plik);
     }
-    strcpy(response.history,"END");
-    CHECK(send(pClient->socket,(void*) &response, sizeof(response),0) != -1);
 }
 
-void save_player_history(struct request request, struct client *pClient) {
+void saveClientHistory(struct request request, struct client *pClient) {
     FILE * pFILE;
     time_t timer;
     char buffer[26];
-    struct tm* tm_info;
-    char filePath[CLIENT_NAME_LENGTH - strlen(history_dir) - 2];
+    char filePath[CLIENT_NAME_LENGTH + strlen(history_dir) + 2];
 
     strcpy(filePath,history_dir);
     strcat(filePath,"/");
@@ -336,12 +304,11 @@ void save_player_history(struct request request, struct client *pClient) {
     CHECK(pFILE != NULL);
 
     time(&timer);
-    tm_info = localtime(&timer);
-    strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+    struct tm *tm_info = localtime(&timer);
+    strftime(buffer, 26, "%Y-%m-%d %H:%M:%S: ", tm_info);
 
     fprintf(pFILE,"%s",buffer);
-    fprintf(pFILE,": ");
-    if(request.opponent_socket == pClient->socket) {
+    if(request.opponentSocket == pClient->socket) {
         if(request.gameState == LOSE) fprintf(pFILE, "LOSE");
         else fprintf(pFILE, "Win by walkover");
     } else {
@@ -352,21 +319,21 @@ void save_player_history(struct request request, struct client *pClient) {
     fclose(pFILE);
 }
 
-void send_opponent_to_player(struct game *game, struct client *client) {
+void notifyOpponent(struct game *game, struct client *client) {
     struct request response;
     response.action=GAME_STATE;
     response.gameState = GAME_ON;
-    if (game->player_1->socket == client->socket) {
-        response.opponent_socket = game->player_2->socket;
+    if (game->player1->socket == client->socket) {
+        response.opponentSocket = game->player2->socket;
         response.sign = 'X'; //client sign
     } else {
-        response.opponent_socket = game->player_1->socket;
+        response.opponentSocket = game->player1->socket;
         response.sign = 'O'; //client sign
     }
     CHECK(send(client->socket,(void*) &response, sizeof(response),0)!=-1);
 }
 
-void unregister_client(struct client *pClient) {
+void unregisterClient(struct client *pClient) {
     if(clients == pClient){
         clients = pClient->next;
         free(pClient);
@@ -387,7 +354,7 @@ void unregister_client(struct client *pClient) {
     }
 }
 
-int clients_count() {
+int getNumberOfClients() {
     int result = 0;
     struct client *tmp = clients;
     while(tmp != NULL) {

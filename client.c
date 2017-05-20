@@ -1,134 +1,127 @@
 #include "common.h"
 #include <curses.h>
 
-int curr_x = FIELD_SIZE_COLS/2;
-int curr_y = FIELD_SIZE_ROWS/2;
+int currX = FIELD_SIZE_COLS/2;
+int currY = FIELD_SIZE_ROWS/2;
 int shouldWait=1;
-int game_state=0;
-int my_turn=1;
-int thread_is_alive = 1;
+int myTurn=1;
 short registered = 0;
+int inGameState=0;
 char sign;
+int gameThreadIsAlive = 1;
 
-int opponent_socket;
-int local_flag = 1;
-int server_port;
-char server_path[CLIENT_NAME_LENGTH + 2];
-char* ip;
+int opponentSocket;
+int localGaming = 1;
+int serverPort;
+char serverPath[CLIENT_NAME_LENGTH + 2];
+char* serverIP;
 char clientName[CLIENT_NAME_LENGTH];
-int socket_fd;
+int serverSocket;
 pthread_t thread;
 char field[FIELD_SIZE_ROWS][FIELD_SIZE_COLS];
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t sendMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t gameMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t	waiting_cond = PTHREAD_COND_INITIALIZER;
 
-void exit_handler(int signo) ;
-void atexit_function();
-void get_arguments(int argc, char **argv);
-void init_client();
+void signalHandler(int signo) ;
+void cleanUpFunction();
+void getArgs(int argc, char **argv);
+void initClient();
 void registerClient();
 void *menu();
 void startGame();
-gamestate_en makeMove();
+gameState makeMove();
 void initField();
 void sendNotificationClientWon();
-void play();
-short checkWon(int y, int x, char sign) ;
 void sendNotificationClientMoved();
+void play();
+short checkAndMarkIfWon(int y, int x, char sign) ;
 int kbhit(void);
 int getUsrInput();
 short belongsToTheField(int y, int x);
 void reverseWinningFields(int y, int x, char sign, short way);
-
 void communicateWithServer();
-
 void askForHistory();
-
-void endGameAndSendGameDisconnect();
+void endGameAndSendDisconnect();
 
 int main(int argc, char **argv){
-    CHECK(atexit(atexit_function) == 0);
+    CHECK(atexit(cleanUpFunction) == 0);
 
-    CHECK_RQ(signal(SIGTSTP, exit_handler) != SIG_ERR);
-    CHECK_RQ(signal(SIGINT, exit_handler) != SIG_ERR);
+    CHECK_RQ(signal(SIGTSTP, signalHandler) != SIG_ERR);
+    CHECK_RQ(signal(SIGINT, signalHandler) != SIG_ERR);
 
-    get_arguments(argc, argv);
+    getArgs(argc, argv);
 
-    init_client();
-
-    CHECK_RQ(pthread_create(&thread, NULL, menu, NULL) != -1);
+    initClient();
 
     registerClient();
+
+    CHECK_RQ(pthread_create(&thread, NULL, menu, NULL) != -1);
 
     communicateWithServer();
 }
 
 void communicateWithServer() {
     struct request response;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-noreturn"
     while(1){
-        CHECK(recv(socket_fd, (void*) &response, sizeof(response), 0) != -1);
+        recv(serverSocket, (void*) &response, sizeof(response), 0);
         switch(response.action){
             case GAME_STATE:
                 if(response.gameState == LOSE){
-                    pthread_mutex_lock(&game_mutex);
+                    pthread_mutex_lock(&gameMutex);
                     field[response.fieldPoint.y][response.fieldPoint.x] = response.sign;
                     mvprintw(response.fieldPoint.y, response.fieldPoint.x, "%c", response.sign);
-                    checkWon(response.fieldPoint.y, response.fieldPoint.x, response.sign);
+                    checkAndMarkIfWon(response.fieldPoint.y, response.fieldPoint.x, response.sign);
                     mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2, "YOU LOSE");
                     refresh();
-                    my_turn = 1;
+                    myTurn = 1;
                     shouldWait = 1;
-                    game_state = 0;
+                    inGameState = 0;
                     getUsrInput();
                     pthread_cond_signal(&waiting_cond);
-                    pthread_mutex_unlock(&game_mutex);
+                    pthread_mutex_unlock(&gameMutex);
                 } else if(response.gameState == GAME_ON){ //opponent has been found
-                    pthread_mutex_lock(&game_mutex);
-                    opponent_socket = response.opponent_socket;
+                    pthread_mutex_lock(&gameMutex);
+                    opponentSocket = response.opponentSocket;
                     sign = response.sign;
-                    my_turn = sign == 'X' ? 1 : 0;
+                    myTurn = sign == 'X' ? 1 : 0;
                     shouldWait=0;
                     pthread_cond_signal(&waiting_cond);
-                    pthread_mutex_unlock(&game_mutex);
+                    pthread_mutex_unlock(&gameMutex);
                 } else if(response.gameState == DISCONN){
-                    pthread_mutex_lock(&game_mutex);
+                    pthread_mutex_lock(&gameMutex);
                     mvprintw(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2 - 30,"\tPlayer %s disconected, which implies you winned by walkover\t", response.name);
                     refresh();
-                    my_turn = 1;
+                    myTurn = 1;
                     shouldWait = 1;
-                    game_state = 0;
+                    inGameState = 0;
+                    getUsrInput();
                     pthread_cond_signal(&waiting_cond);
-                    pthread_mutex_unlock(&game_mutex);
+                    pthread_mutex_unlock(&gameMutex);
                 }
                 break;
             case OPPONENT_MOVED:
-                pthread_mutex_lock(&game_mutex);
+                pthread_mutex_lock(&gameMutex);
                 int y = response.fieldPoint.y;
                 int x = response.fieldPoint.x;
                 field[y][x] = response.sign;
                 mvprintw(y,x,"%c",response.sign);
-                my_turn = 1;
+                myTurn = 1;
                 mvprintw(FIELD_SIZE_ROWS - 1, FIELD_SIZE_COLS/2 - 5, "YOUR TURN");
                 getUsrInput();
                 for(int i = FIELD_SIZE_COLS/2 - 5 ; i < FIELD_SIZE_COLS/2 + 5 ; i++){
                     mvprintw(FIELD_SIZE_ROWS - 1, i, "%c",field[FIELD_SIZE_ROWS -1][i] != 0 ? field[FIELD_SIZE_ROWS -1][i] : ' ');
                 }
-                move(curr_y,curr_x);
+                move(currY,currX);
                 pthread_cond_signal(&waiting_cond);
-                pthread_mutex_unlock(&game_mutex);
+                pthread_mutex_unlock(&gameMutex);
                 break;
             case HISTORY:
-                pthread_mutex_lock(&mutex);
                 printw(response.history);
                 refresh();
-                pthread_mutex_unlock(&mutex);
                 break;
         }
     }
-#pragma clang diagnostic pop
 }
 
 void registerClient() {
@@ -136,122 +129,112 @@ void registerClient() {
     strcpy(request.name, clientName);
     request.action = REGISTER_USER;
 
-    printf("Registering player on server...");
-    pthread_mutex_lock(&mutex);
-    if(send(socket_fd, (void*) &request, sizeof(request), 0) != -1);
-    printf("\t\t\t\033[32m[ OK ]\033[0m\n");
+    printf("Registering player on server...\n");
+    pthread_mutex_lock(&sendMutex);
+    CHECK_RQ(send(serverSocket, (void*) &request, sizeof(request), 0) != -1);
     registered = 1;
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&sendMutex);
 }
 
-void get_arguments(int argc, char **argv) {
+void getArgs(int argc, char **argv) {
     printf("parsing arguments...");
     if(argc == 4 && strcmp(argv[2], "local") == 0){
-        local_flag = 1;
+        localGaming = 1;
         strcpy(clientName, argv[1]);
-        strcpy(server_path, argv[3]);
-        printf("\t\t\t\033[32m[ OK ]\033[0m\n");
+        strcpy(serverPath, argv[3]);
+        printf("\t\t\033[32m[ ARGUMENTS OK ]\033[0m\n");
     } else if(argc == 5 && strcmp(argv[2], "network") == 0) {
-        local_flag = 0;
+        localGaming = 0;
         strcpy(clientName, argv[1]);
-        ip = argv[3];
-        server_port = atoi(argv[4]);
-        printf("\t\t\t\033[32m[ OK ]\033[0m\n");
+        serverIP = argv[3];
+        serverPort = atoi(argv[4]);
+        printf("\t\t\033[32m[ ARGUMENTS OK ]\033[0m\n");
     } else {
-        printf("\t\t\t\033[31m[ WRONG ARGUMENTS ]\033[0m\n");
+        printf("\t\t\033[31m[ WRONG ARGUMENTS ]\033[0m\n");
         printf("Select type of connection [1 = local, 0 = network]: ");
-        scanf("%d", &local_flag);
+        scanf("%d", &localGaming);
         printf("Username: ");
         scanf("%s", clientName);
-        if(local_flag){
+        if(localGaming){
             printf("Type server path: ");
-            scanf("%s", server_path);
+            scanf("%s", serverPath);
         } else {
             printf("Type server ip: ");
-            ip = calloc(20, sizeof(char));
-            scanf("%s", ip);
+            serverIP = calloc(20, sizeof(char));
+            scanf("%s", serverIP);
             printf("Type server port: ");
-            scanf("%d", &server_port);
+            scanf("%d", &serverPort);
         }
     }
 }
 
-void exit_handler(int signo) {
+void signalHandler(int signo) {
     exit(0);
 }
 
-void atexit_function(){
+void cleanUpFunction(){
     struct request request;
-    if(game_state==1){
+    if(inGameState==1){
         strcpy(request.name,clientName);
         request.action = GAME_STATE;
         request.gameState=DISCONN;
-        request.opponent_socket=opponent_socket;
+        request.opponentSocket=opponentSocket;
 
-        pthread_mutex_lock(&mutex);
-        CHECK(send(socket_fd, (void*) &request, sizeof(request), 0) != -1);
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_lock(&sendMutex);
+        CHECK(send(serverSocket, (void*) &request, sizeof(request), 0) != -1);
+        pthread_mutex_unlock(&sendMutex);
     }
     if(registered){
         request.action = DISCONNECT;
-        pthread_mutex_lock(&mutex);
-        CHECK(send(socket_fd, (void*) &request, sizeof(request), 0) != -1);
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_lock(&sendMutex);
+        CHECK(send(serverSocket, (void*) &request, sizeof(request), 0) != -1);
+        pthread_mutex_unlock(&sendMutex);
     }
-    thread_is_alive = 0;
-    //if(thread != 0)
-    //	pthread_join(thread, NULL);
-    close(socket_fd);
+    gameThreadIsAlive = 0;
+    close(serverSocket);
     endwin();
     printf("Exiting...");
 }
 
-void init_client(){
-    printf("Creating socket");
-    if(local_flag) CHECK_RQ((socket_fd = socket(AF_UNIX, SOCK_STREAM, 0)) != -1);
-    else CHECK_RQ((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) != -1);
-    printf("\t\t\t\t\t\033[32m[ OK ]\033[0m\n");
+void initClient(){
+    printf("Creating socket\n");
+    if(localGaming) CHECK_RQ((serverSocket = socket(AF_UNIX, SOCK_STREAM, 0)) != -1);
+    else CHECK_RQ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) != -1);
 
     struct sockaddr_un	server_unix_address;
     struct sockaddr_in	server_inet_address;
     struct sockaddr* server_address;
 
-    socklen_t unix_address_size = sizeof(struct sockaddr_un);
-    socklen_t inet_address_size = sizeof(struct sockaddr_in);
     socklen_t address_size;
-
     memset(&server_unix_address, 0, sizeof(server_unix_address));
     memset(&server_inet_address, 0, sizeof(server_inet_address));
 
-    if(local_flag) {
-        // Ustawiamy adresy dla połączenia lokalnego
-        printf("Setting up server adress");
+    if(localGaming) {
+        // Set address for local connection
+        printf("Setting up server adress\n");
         server_unix_address.sun_family = AF_UNIX;
-        strcpy(server_unix_address.sun_path, server_path);
+        strcpy(server_unix_address.sun_path, serverPath);
         server_address = (struct sockaddr*) &server_unix_address;
-        printf("\t\t\t\033[32m[ OK ]\033[0m\n");
 
-        address_size = unix_address_size;
+        address_size = sizeof(struct sockaddr_un);
     } else {
-        // Ustawiamy adresy dla połączenia zdalnego
-        printf("Setting up server adress");
+        // Set address for network connection
+        printf("Setting up server adress\n");
         server_inet_address.sin_family = AF_INET;
-        inet_pton(AF_INET, ip, &(server_inet_address.sin_addr.s_addr));
-        server_inet_address.sin_port = htons(server_port);
+        inet_pton(AF_INET, serverIP, &(server_inet_address.sin_addr.s_addr));
+        server_inet_address.sin_port = htons(serverPort);
         server_address = (struct sockaddr*) &server_inet_address;
-        printf("\t\t\t\033[32m[ OK ]\033[0m\n");
 
-        address_size = inet_address_size;
+        address_size = sizeof(struct sockaddr_in);
     }
 
     printf("Connecting to server");
-    CHECK_RQ(connect(socket_fd, server_address, address_size) != -1);
-    printf("\t\t\t\t\033[32m[ OK ]\033[0m\n");
+    CHECK_RQ(connect(serverSocket, server_address, address_size) != -1);
+    printf("\t\t\033[32m[ Connected ]\033[0m\n");
 }
 
 void *menu(){
     initscr();
-    scrollok(stdscr,true);
     mvprintw(FIELD_SIZE_ROWS-1,0,"Przycisnij przycisk aby rozpoczac...\n");
 
     noecho();
@@ -282,8 +265,6 @@ void *menu(){
                     move(FIELD_SIZE_ROWS-1,0);
                     user_action=getUsrInput();
                     if(user_action!=27){
-                        pthread_mutex_lock(&game_mutex);
-                        pthread_mutex_unlock(&game_mutex);
                         startGame();
                     }
                     clear();
@@ -291,7 +272,6 @@ void *menu(){
                 case 2:
                     clear();
                     move(0,0);
-
                     askForHistory();
                     while(user_action != 27) {
                         user_action=getUsrInput();
@@ -302,7 +282,7 @@ void *menu(){
                     break;
                 case 3:
                     clear();
-                    thread_is_alive = 0;
+                    gameThreadIsAlive = 0;
             }
 
         }
@@ -331,9 +311,7 @@ void *menu(){
         }
         attroff( A_REVERSE );
         mvprintw(FIELD_SIZE_ROWS-1,0,"Game created and produced by Maksymilian Wojczuk");
-    } while( thread_is_alive);			//to end the loop you need to hit enter on "exit"
-//    getUsrInput();
-    scrollok(stdscr,false);
+    } while( gameThreadIsAlive);			//to end the loop you need to hit enter on "exit"
     endwin();
     kill(getpid(), SIGINT);
     return NULL;
@@ -343,116 +321,119 @@ void askForHistory() {
     struct request request;
     request.action = HISTORY;
     strcpy(request.name, clientName);
-    CHECK(send(socket_fd, &request, sizeof(request), 0) != -1);
+    CHECK(send(serverSocket, &request, sizeof(request), 0) != -1);
 }
 
 void startGame() {
     struct request request;
     strcpy(request.name, clientName);
     request.action = START_GAME;
-    CHECK_RQ(send(socket_fd, (void*) &request, sizeof(request), 0) != -1);
+    CHECK_RQ(send(serverSocket, (void*) &request, sizeof(request), 0) != -1);
     initField();
 
-    pthread_mutex_lock(&game_mutex);
+    pthread_mutex_lock(&gameMutex);
     clear();
     mvprintw(FIELD_SIZE_ROWS/2,(FIELD_SIZE_COLS/2) - 14, "Oczekiwanie na przeciwnika...");
     refresh();
     while(shouldWait)
-        pthread_cond_wait(&waiting_cond, &game_mutex);
-    pthread_mutex_unlock(&game_mutex);
-    game_state = 1;
+        pthread_cond_wait(&waiting_cond, &gameMutex);
+    inGameState = 1;
+    pthread_mutex_unlock(&gameMutex);
     play();
 }
 
 void play() {
     clear();
     move(FIELD_SIZE_ROWS/2, FIELD_SIZE_COLS/2);
-    while(game_state && thread_is_alive){
-        pthread_mutex_lock(&game_mutex);
-        while(!my_turn) pthread_cond_wait(&waiting_cond, &game_mutex);
-        if(!game_state || !thread_is_alive) {
-            pthread_mutex_unlock(&game_mutex);
+    while(inGameState && gameThreadIsAlive){
+        pthread_mutex_lock(&gameMutex);
+        while(!myTurn) pthread_cond_wait(&waiting_cond, &gameMutex);
+        if(!inGameState || !gameThreadIsAlive) {
+            pthread_mutex_unlock(&gameMutex);
             break;
         }
         if(makeMove() == WIN){
             sendNotificationClientWon();
-//            sendNotificationClientMoved();
             mvprintw(FIELD_SIZE_ROWS-1, FIELD_SIZE_COLS/2 - 5, "WINNER!!!");
             refresh();
             getUsrInput();
             clear();
-            game_state = 0;
-            my_turn = 1;
+            inGameState = 0;
+            myTurn = 1;
             shouldWait = 1;
-        } else if(game_state && thread_is_alive) sendNotificationClientMoved();
-        pthread_mutex_unlock(&game_mutex);
+        } else if(inGameState && gameThreadIsAlive) sendNotificationClientMoved();
+        pthread_mutex_unlock(&gameMutex);
     }
 }
 
-gamestate_en makeMove() {
-    getyx(stdscr, curr_y, curr_x);
+gameState makeMove() {
+    getyx(stdscr, currY, currX);
     int user_action = 0;
-    pthread_mutex_unlock(&game_mutex);
+    pthread_mutex_unlock(&gameMutex);
     while(1){
         user_action = getUsrInput();
         switch(user_action){
             case 260:
-                curr_x--;
-                move(curr_y,curr_x);
+                currX--;
+                move(currY,currX);
                 break;
             case 259:
-                curr_y--;
-                move(curr_y,curr_x);
+                currY--;
+                move(currY,currX);
                 break;
             case 261:
-                curr_x++;
-                move(curr_y,curr_x);
+                currX++;
+                move(currY,currX);
                 break;
             case 258:
-                curr_y++;
-                move(curr_y,curr_x);
+                currY++;
+                move(currY,currX);
                 break;
             case 27:
-                endGameAndSendGameDisconnect();
+                endGameAndSendDisconnect();
                 return DISCONN;
             default:
-                pthread_mutex_lock(&game_mutex);
-                if(field[curr_y][curr_x] == 0 && (user_action == 32 || user_action == 10)) {
-                    field[curr_y][curr_x] = sign;
-                    mvprintw(curr_y,curr_x,"%c", sign);
+                pthread_mutex_lock(&gameMutex);
+                if(field[currY][currX] == 0 && (user_action == 32 || user_action == 10)) {
+                    field[currY][currX] = sign;
+                    mvprintw(currY,currX,"%c", sign);
                     refresh();
-                    if(checkWon(curr_y,curr_x,sign)) return WIN;
+                    if(checkAndMarkIfWon(currY, currX, sign)) return WIN;
                     else return GAME_ON;
                 }
-                pthread_mutex_unlock(&game_mutex);
+                pthread_mutex_unlock(&gameMutex);
                 break;
         }
     }
 }
 
-void endGameAndSendGameDisconnect() {
+void endGameAndSendDisconnect() {
     struct request request;
     strcpy(request.name, clientName);
     request.gameState = DISCONN;
     request.action = GAME_STATE;
-    request.opponent_socket = opponent_socket;
-    pthread_mutex_lock(&mutex);
-    CHECK(send(socket_fd, (void*) &request, sizeof(request), 0) != -1);
-    game_state = 0;
+    request.opponentSocket = opponentSocket;
+    pthread_mutex_lock(&sendMutex);
+    CHECK(send(serverSocket, (void*) &request, sizeof(request), 0) != -1);
+    pthread_mutex_lock(&sendMutex);
+    pthread_mutex_lock(&gameMutex);
+    inGameState = 0;
+    pthread_mutex_lock(&gameMutex);
+
 }
 
 void sendNotificationClientMoved() {
     struct request request;
     request.action = OPPONENT_MOVED;
-    request.opponent_socket = opponent_socket;
+    request.opponentSocket = opponentSocket;
     strcpy(request.name, clientName);
     request.sign = sign;
     struct fieldPoint fieldPoint;
-    fieldPoint.y = curr_y;
-    fieldPoint.x = curr_x;
+    fieldPoint.y = currY;
+    fieldPoint.x = currX;
     request.fieldPoint = fieldPoint;
-    CHECK(send(socket_fd, &request, sizeof(request), 0) != -1);
-    my_turn = 0;
+    CHECK(send(serverSocket, &request, sizeof(request), 0) != -1);
+    myTurn = 0;
 }
 
 void initField() {
@@ -469,15 +450,15 @@ void sendNotificationClientWon() {
     request.action = GAME_STATE;
     request.gameState = WIN;
     request.sign = sign;
-    request.opponent_socket = opponent_socket;
+    request.opponentSocket = opponentSocket;
     struct fieldPoint fieldPoint;
-    fieldPoint.y = curr_y;
-    fieldPoint.x = curr_x;
+    fieldPoint.y = currY;
+    fieldPoint.x = currX;
     request.fieldPoint = fieldPoint;
-    CHECK(send(socket_fd,&request, sizeof(request), 0) != -1);
+    CHECK(send(serverSocket,&request, sizeof(request), 0) != -1);
 }
 
-short checkWon(int y, int x, char sign) {
+short checkAndMarkIfWon(int y, int x, char sign) {
     int numberOfSignsNear = 0;
     short checkingWay = 1;
     for(int i = -5 ; i < 6 ; i++){

@@ -23,7 +23,7 @@
 #define HISTORY_MSG_LENGTH 200
 #define FIELD_SIZE_COLS 150
 #define FIELD_SIZE_ROWS 50
-#define NUMBER_OF_SIGNS_WINNING 3
+#define NUMBER_OF_SIGNS_WINNING 5
 #define CLIENT_NAME_LENGTH 50
 #define MAX_CLIENTS 20
 
@@ -47,21 +47,21 @@
 
 
 typedef enum {
-    REGISTER_USER,	//wysylane przy probie polaczenia z serwerem
+    REGISTER_USER,
     START_GAME,
-    CHECK_HISTORY,
     DISCONNECT,
-    GAME_STATE, 	//GAME,WIN,LOSS,DISCONNECT
-    OPPONENT_MOVED, 	//GAME READY
+    GAME_STATE,
+    OPPONENT_MOVED,
     HISTORY,
-} action_en;
+    SERVER_ERROR
+} requestType;
 
 typedef enum {
     WIN,
     GAME_ON,
     LOSE,
-    DISCONN
-} gamestate_en;
+    DISCONN // wysylany w momencie, jezeli uzytkownik rozlaczy sie podczas gry
+} gameState;
 
 struct client {
     char name[CLIENT_NAME_LENGTH];
@@ -76,18 +76,18 @@ struct fieldPoint{
 };
 
 struct request{
-    char name[CLIENT_NAME_LENGTH];
-    int opponent_socket;  // GAME.SERVER_INFO.OPPONENT_SOCKET to w opponent_socket.socket przeciwnika
-    action_en action;
-    struct fieldPoint fieldPoint;
-    gamestate_en gameState;
+    char name[CLIENT_NAME_LENGTH];                  //player name
+    char history[HISTORY_MSG_LENGTH];               //history
+    int opponentSocket;
+    requestType action;
+    gameState gameState;
     char sign;
-    char history[HISTORY_MSG_LENGTH];
+    struct fieldPoint fieldPoint;
 };
 
 struct game {
-    struct client *player_1;
-    struct client *player_2;
+    struct client *player1;
+    struct client *player2;
     struct game* next;
 };
 
