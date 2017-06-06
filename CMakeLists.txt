@@ -8,7 +8,7 @@ add_compile_options(-Wall -pthread)
 
 set(SOURCE_FILES
         client.c
-#        server.c
+        server.c
         common.h
         )
 

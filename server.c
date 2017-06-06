@@ -74,9 +74,9 @@ void signalHandler(int signo) {
 
 void initServer() {
     printf("\nCreating local socket\n");
-    CHECK_RQ((UnixSocket = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0)) != -1);
+    CHECK_RQ((UnixSocket = socket(AF_UNIX, SOCK_STREAM, 0)) != -1);
     printf("Creating inet socket\n");
-    CHECK_RQ((inetSocket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) != -1);
+    CHECK_RQ((inetSocket = socket(AF_INET, SOCK_STREAM, 0)) != -1);
 
     memset(&unixServerAddress, 0, sizeof(unixServerAddress));
     memset(&inetServerAddress, 0, sizeof(inetServerAddress));
@@ -103,22 +103,25 @@ void initServer() {
 
 void newClientListener() {
     printf("Waiting for clients\n");
+    int maxDesc = UnixSocket > inetSocket ? UnixSocket : inetSocket;
     struct client newClient;
     while(1) {
-        pthread_mutex_lock(&clientListMutex);
-        newClient.socket = accept(UnixSocket, NULL, NULL);
-        if(newClient.socket == -1) {
-            pthread_mutex_unlock(&clientListMutex);
-        } else {
-            CHECK(pthread_create(&newClient.thread, NULL, clientServiceThread, &newClient) != -1);
-        }
-
-        pthread_mutex_lock(&clientListMutex);
-        newClient.socket = accept(inetSocket, NULL, NULL);
-        if(newClient.socket == -1) {
-            pthread_mutex_unlock(&clientListMutex);
-        } else {
-            CHECK(pthread_create(&newClient.thread, NULL, clientServiceThread, &newClient) != -1);
+        fd_set fdSet;
+        FD_ZERO(&fdSet);
+        FD_SET(UnixSocket, &fdSet);
+        FD_SET(inetSocket, &fdSet);
+        int numberOfDescriptors = select(maxDesc + 1, &fdSet, NULL, NULL, NULL);
+        if(numberOfDescriptors != -1) {
+            if(FD_ISSET(UnixSocket,&fdSet)){
+                pthread_mutex_lock(&clientListMutex);
+                newClient.socket = accept(UnixSocket, NULL, NULL);
+                CHECK(pthread_create(&newClient.thread, NULL, clientServiceThread, &newClient) != -1);
+            }
+            if(FD_ISSET(inetSocket, &fdSet)){
+                pthread_mutex_lock(&clientListMutex);
+                newClient.socket = accept(inetSocket, NULL, NULL);
+                CHECK(pthread_create(&newClient.thread, NULL, clientServiceThread, &newClient) != -1);
+            }
         }
     }
 }

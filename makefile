@@ -11,7 +11,7 @@ all: $(TARGET2) $(TARGET1)
 
 .PHONY: run
 run: $(TARGET2)
-	resize -s 50 150
+	resize -s 24 80
 	./$(TARGET2)
 
 $(TARGET1): $(SERVER)

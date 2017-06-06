@@ -21,8 +21,8 @@
 
 #define history_dir "history"
 #define HISTORY_MSG_LENGTH 200
-#define FIELD_SIZE_COLS 150
-#define FIELD_SIZE_ROWS 50
+#define FIELD_SIZE_COLS 80
+#define FIELD_SIZE_ROWS 24
 #define NUMBER_OF_SIGNS_WINNING 5
 #define CLIENT_NAME_LENGTH 50
 #define MAX_CLIENTS 20
@@ -52,8 +52,7 @@ typedef enum {
     DISCONNECT,
     GAME_STATE,
     OPPONENT_MOVED,
-    HISTORY,
-    SERVER_ERROR
+    HISTORY
 } requestType;
 
 typedef enum {
