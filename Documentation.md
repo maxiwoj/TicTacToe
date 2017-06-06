@@ -33,7 +33,7 @@ defined.
 - Enum requestType - every request is processed depending on this enum.
 - Enum gameState - when requestType specifies change of a game state
 this num contains the actual state. Note, that DISCONN is different 
-than regular DISCONNECT from requestType - if user disconnets while 
+than regular DISCONNECT from requestType - if user disconnects while 
 in the game, his opponent needs to be notified, that the user surrendered.
 - struct Request:
     - name - the name of the client
@@ -50,13 +50,13 @@ in the game, his opponent needs to be notified, that the user surrendered.
 ### server.c
 This file is the file for the server process. Only the most important 
 functions will be described:
-- initServer - here happens all the magic connectd to the 
-configuration of the server sokets 
+- initServer - here happens all the magic connected to the 
+configuration of the server sockets 
 - newClientListener - simple function accepting client requests for 
 registration - when a client tries to connect, new socket is created 
 (using accept()) and new thread for handling all the requests for 
 this client is created. Every of those threads run until 
-client disconnets.
+client disconnects.
 
 
 ### client.c
